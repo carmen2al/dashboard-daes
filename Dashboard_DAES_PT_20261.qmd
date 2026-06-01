@@ -1,0 +1,311 @@
+---
+title: "Dashboard DAES: Plan de Trabajo (2026-0 y 2026-1)"
+format:
+  dashboard:
+    scrolling: true
+    theme: cosmo
+server: shiny
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(shiny)
+library(googlesheets4)
+library(plotly)
+library(scales)
+
+gs4_deauth()
+
+url_sheet <- "https://docs.google.com/spreadsheets/d/1DVB1HMDZxHc2tKNUde61sLnGmHEjWxGKZQo34iNfGlw/edit?usp=sharing"
+
+datos <- tryCatch(
+  read_sheet(url_sheet, sheet = "General"),
+  error = function(e) { message("Error: ", e$message); NULL }
+)
+
+# Aplanar list-cols numéricas del setup
+if (!is.null(datos)) {
+  rdatos <- datos %>%
+    mutate(across(where(is.list), ~ {
+      v <- sapply(., function(x) if (length(x) == 0) NA_real_ else as.numeric(x[[1]]))
+      v
+    }))
+} else {
+  rdatos <- tibble()
+}
+
+# Renombrar oficinas
+nombre_oficina <- c(
+  "ApoyoSocial"    = "Apoyo y promoción social",
+  "OIE"            = "Iniciativas Estudiantiles",
+  "Prom_Bienestar" = "Promoción del Bienestar",
+  "OBP"            = "OBP",
+  "Becas"          = "Becas",
+  "Deportes"       = "Deportes",
+  "Empleabilidad"  = "Empleabilidad",
+  "Salud"          = "Salud"
+)
+
+if (nrow(rdatos) > 0 && "Oficina" %in% names(rdatos)) {
+  rdatos <- rdatos %>% mutate(Oficina = recode(Oficina, !!!nombre_oficina))
+}
+
+color_semaforo <- function(x) {
+  dplyr::case_when(x < 70 ~ "#E74C3C", x < 100 ~ "#F39C12", TRUE ~ "#27AE60")
+}
+
+colores_estado <- c(
+  "FINALIZADO"    = "#27AE60",
+  "EN DESARROLLO" = "#2980B9",
+  "NO EJECUTADO"  = "#E74C3C",
+  "REPROGRAMADO"  = "#F39C12"
+)
+
+safe_chr <- function(col) {
+  sapply(col, function(x) {
+    if (is.null(x) || length(x) == 0) NA_character_
+    else as.character(x[[1]])
+  })
+}
+
+safe_num <- function(col) {
+  sapply(col, function(x) {
+    if (is.null(x) || length(x) == 0) NA_real_
+    else suppressWarnings(as.numeric(x[[1]]))
+  })
+}
+```
+
+# {.sidebar}
+
+```{r ui-sidebar}
+selectInput("oficina", tags$b("Oficina"), choices = NULL)
+selectInput("ciclo",   tags$b("Ciclo"),   choices = c("2026-0", "2026-1"), selected = "2026-0")
+uiOutput("tarjeta_metas")
+```
+
+# Gráficos {orientation="rows"}
+
+## Row {height="480px"}
+
+```{r}
+#| title: "Cantidad de metas por tipo de actividad"
+plotlyOutput("g1_tipo", width = "100%", height = "410px")
+```
+
+### Nivel de cumplimiento promedio por tipo de actividad (%)
+
+```{r}
+#| title: "Nivel de cumplimiento promedio por tipo de actividad (%)"
+plotlyOutput("g2_cumplimiento", width = "100%", height = "410px")
+```
+
+
+## Row {height="480px"}
+
+```{r}
+#| title: "Metas según público objetivo (%)"
+plotlyOutput("g3_publico", width = "100%", height = "410px")
+```
+
+```{r}
+#| title: "Metas según estado de ejecución"
+plotlyOutput("g5_estado", width = "100%", height = "410px")
+```
+
+## Row {height="480px"}
+
+### Nivel de cumplimiento promedio general (%)
+
+```{r}
+#| title: "Nivel de cumplimiento promedio general (%)"
+plotlyOutput("g4_gauge", width = "100%", height = "410px")
+```
+
+```{r server}
+#| context: server
+
+# ── Llenar selector ─────────────────────────────────────────────────────────
+observe({
+  req(nrow(rdatos) > 0)
+  oficinas <- sort(unique(rdatos$Oficina))
+  updateSelectInput(session, "oficina", choices = oficinas, selected = oficinas[1])
+})
+
+# ── Reactivo base ───────────────────────────────────────────────────────────
+datos_reactivo <- reactive({
+  req(input$oficina, input$ciclo, nrow(rdatos) > 0)
+
+  df <- rdatos %>% filter(Oficina == input$oficina, Ciclo == input$ciclo)
+
+  if (input$ciclo == "2026-0") {
+    df <- df %>% mutate(
+      nivel_cumplimiento = safe_num(Nivel_Cumplimiento_20260) * 100,
+      estado             = safe_chr(Estado_Termino_20260),
+      ejecucion          = safe_num(Ejecucion_Termino_20260)
+    )
+  } else {
+    df <- df %>% mutate(
+      nivel_cumplimiento = safe_num(Nivel_Cumplimiento_PrimerCorte_20261) * 100,
+      estado             = safe_chr(Estado_PrimerCorte_20261),
+      ejecucion          = safe_num(Ejecucion_PrimerCorte_20261)
+    )
+  }
+  df
+})
+
+# ── Tarjeta metas ───────────────────────────────────────────────────────────
+output$tarjeta_metas <- renderUI({
+  tot <- nrow(datos_reactivo())
+  div(
+    style = paste0(
+      "margin-top:20px;padding:18px 12px;border-radius:10px;",
+      "background:linear-gradient(135deg,#1A5276,#2E86C1);",
+      "color:white;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.25);"
+    ),
+    div(style = "font-size:13px;letter-spacing:1px;opacity:.85;margin-bottom:4px;", "TOTAL DE METAS"),
+    div(style = "font-size:52px;font-weight:700;line-height:1;", tot),
+    div(style = "font-size:12px;opacity:.75;margin-top:4px;", paste("Ciclo", input$ciclo))
+  )
+})
+
+# ── G1: Metas por tipo de actividad ─────────────────────────────────────────
+output$g1_tipo <- renderPlotly({
+  df <- datos_reactivo()
+  req(nrow(df) > 0, "Tipo_Actividad" %in% names(df))
+
+  conteo <- df %>%
+    count(Tipo_Actividad, name = "n") %>%
+    arrange(desc(n)) %>%
+    mutate(Tipo_Actividad = fct_reorder(Tipo_Actividad, n, .desc = TRUE))
+
+  plot_ly(conteo, x = ~Tipo_Actividad, y = ~n, type = "bar",
+          marker = list(color = "#0d2251", line = list(color = "#0d2251", width = 1.2)),
+          text = ~n, textposition = "outside",
+          hovertemplate = "<b>%{x}</b><br>Metas: %{y}<extra></extra>") %>%
+    layout(xaxis  = list(title = "", tickangle = -30, automargin = TRUE),
+           yaxis  = list(title = "Cantidad de metas"),
+           margin = list(t = 30, b = 80),
+           plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)") %>%
+    config(responsive = TRUE, displayModeBar = FALSE)
+})
+
+# ── G2: Cumplimiento promedio por tipo ───────────────────────────────────────
+output$g2_cumplimiento <- renderPlotly({
+  df <- datos_reactivo()
+  req(nrow(df) > 0, "Tipo_Actividad" %in% names(df))
+
+  prom <- df %>%
+    group_by(Tipo_Actividad) %>%
+    summarise(prom_nivel = mean(nivel_cumplimiento, na.rm = TRUE), .groups = "drop") %>%
+    filter(!is.na(prom_nivel)) %>%
+    mutate(Tipo_Actividad = fct_reorder(Tipo_Actividad, prom_nivel, .desc = TRUE)) %>%
+    arrange(desc(prom_nivel)) %>%
+    mutate(
+      color = color_semaforo(prom_nivel),
+      label = paste0(round(prom_nivel, 1), "%")
+    )
+
+  req(nrow(prom) > 0)
+
+  plot_ly(prom, x = ~Tipo_Actividad, y = ~prom_nivel, type = "bar",
+          marker = list(color = ~color, line = list(color = "rgba(0,0,0,.15)", width = 1)),
+          text = ~label, textposition = "outside",
+          hovertemplate = "<b>%{x}</b><br>Cumplimiento: %{text}<extra></extra>") %>%
+    layout(xaxis  = list(title = "", tickangle = -30, automargin = TRUE, type = "category"),
+           yaxis  = list(title = "Cumplimiento promedio (%)", range = c(0, 160)),
+           shapes = list(list(type = "line", x0 = -0.5, x1 = nrow(prom) - 0.5,
+                              y0 = 100, y1 = 100,
+                              line = list(color = "grey", width = 1.5, dash = "dot"))),
+           margin = list(t = 30, b = 80),
+           plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)") %>%
+    config(responsive = TRUE, displayModeBar = FALSE)
+})
+
+# ── G3: Público objetivo (barras horizontales) ───────────────────────────────
+output$g3_publico <- renderPlotly({
+  df <- datos_reactivo()
+  req(nrow(df) > 0, "Publico_Objetivo" %in% names(df))
+
+  conteo <- df %>%
+    count(Publico_Objetivo, name = "n") %>%
+    arrange(desc(n)) %>%
+    mutate(etiqueta = str_trunc(Publico_Objetivo, width = 45, ellipsis = "..."))
+
+  plot_ly(conteo,
+          x = ~n, y = ~reorder(etiqueta, n),
+          type        = "bar",
+          orientation = "h",
+          marker      = list(color = "#2E86C1", line = list(color = "#1A5276", width = 1)),
+          text        = ~n, textposition = "outside",
+          hovertext   = ~Publico_Objetivo,
+          hovertemplate = "<b>%{hovertext}</b><br>Metas: %{x}<extra></extra>") %>%
+    layout(xaxis  = list(title = "Cantidad de metas"),
+           yaxis  = list(title = "", automargin = TRUE),
+           margin = list(l = 20, r = 50, t = 30, b = 40),
+           plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)") %>%
+    config(responsive = TRUE, displayModeBar = FALSE)
+})
+
+# ── G5: Metas por estado ─────────────────────────────────────────────────────
+output$g5_estado <- renderPlotly({
+  df <- datos_reactivo()
+  req(nrow(df) > 0)
+
+  conteo <- df %>%
+    mutate(estado = toupper(trimws(estado))) %>%
+    count(estado, name = "n") %>%
+    arrange(desc(n)) %>%
+    mutate(color = case_when(
+      estado == "FINALIZADO"    ~ colores_estado["FINALIZADO"],
+      estado == "EN DESARROLLO" ~ colores_estado["EN DESARROLLO"],
+      estado == "NO EJECUTADO"  ~ colores_estado["NO EJECUTADO"],
+      estado == "REPROGRAMADO"  ~ colores_estado["REPROGRAMADO"],
+      TRUE ~ "#95A5A6"
+    ))
+
+  plot_ly(conteo, x = ~estado, y = ~n, type = "bar",
+          marker = list(color = ~color, line = list(color = "rgba(0,0,0,.15)", width = 1)),
+          text = ~n, textposition = "outside",
+          hovertemplate = "<b>%{x}</b><br>Metas: %{y}<extra></extra>") %>%
+    layout(xaxis  = list(title = "", type = "category", automargin = TRUE, tickangle = -20),
+           yaxis  = list(title = "Cantidad de metas"),
+           margin = list(t = 30, b = 80),
+           plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)") %>%
+    config(responsive = TRUE, displayModeBar = FALSE)
+})
+
+# ── G4: Gauge de cumplimiento general ────────────────────────────────────────
+output$g4_gauge <- renderPlotly({
+  df  <- datos_reactivo()
+  req(nrow(df) > 0)
+
+  val         <- round(mean(df$nivel_cumplimiento, na.rm = TRUE), 1)
+  color_aguja <- color_semaforo(val)
+
+  plot_ly(type = "indicator", mode = "gauge+number+delta", value = val,
+          number = list(suffix = "%", font = list(size = 46, color = color_aguja)),
+          delta  = list(reference = 100,
+                        increasing = list(color = "#27AE60"),
+                        decreasing = list(color = "#E74C3C"),
+                        suffix = "%"),
+          gauge  = list(
+            axis      = list(range = list(0, 150), tickmode = "linear",
+                             dtick = 25, ticksuffix = "%"),
+            bar       = list(color = color_aguja, thickness = 0.25),
+            steps     = list(
+              list(range = c(0,   70),  color = "#FADBD8"),
+              list(range = c(70,  100), color = "#FDEBD0"),
+              list(range = c(100, 150), color = "#D5F5E3")
+            ),
+            threshold   = list(line = list(color = "#566573", width = 3), value = 100),
+            bgcolor     = "white", borderwidth = 1, bordercolor = "#D5D8DC"
+          )) %>%
+    layout(margin = list(l = 30, r = 30, t = 60, b = 20),
+           plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)") %>%
+    config(responsive = TRUE, displayModeBar = FALSE)
+})
+
+```
+
+
